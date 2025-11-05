@@ -57,7 +57,7 @@ module.exports = function(router) {
     // GET /users/:id
     router.get('/users/:id', async (req, res) => {
         try {
-            const user = await User.findById(req.params.id).select(req.query.select);
+            const user = await User.findById(req.params.id).select(req.query.select ?? '');
             if (!user) return res.status(404).json({ message: 'User not found', data: null });
             res.json({ message: 'OK', data: user });
         } catch (err) {
@@ -113,7 +113,7 @@ module.exports = function(router) {
                 if (tasksToAdd.length > 0) {
                     await Task.updateMany(
                         { _id: { $in: tasksToAdd } },
-                        { $set: { assignedUser: user._id.toString(), assignedUserName: user.name } }
+                        { $set: { assignedUser: user._id, assignedUserName: user.name } }
                     );
                 }
 
@@ -174,7 +174,7 @@ module.exports = function(router) {
     // GET /tasks/:id
     router.get('/tasks/:id', async (req, res) => {
         try {
-            const task = await Task.findById(req.params.id).select(req.query.select);
+            const task = await Task.findById(req.params.id).select(req.query.select ?? '');
             if (!task) return res.status(404).json({ message: 'Task not found', data: null });
             res.json({ message: 'OK', data: task });
         } catch (err) {
@@ -194,7 +194,7 @@ module.exports = function(router) {
                 const user = await User.findById(assignedUser);
                 if (user) {
                     assignedUserName = user.name;
-                    userId = user._id.toString();
+                    userId = user._id;
                     user.pendingTasks.push(userId); // add task id to user pendingTasks
                     await user.save();
                 }
@@ -227,12 +227,12 @@ module.exports = function(router) {
             if (!task) return res.status(404).json({ message: 'Task not found', data: null });
 
             // Update assigned user references
-            if (assignedUser !== undefined && assignedUser !== task.assignedUser) {
+            if (assignedUser !== undefined && assignedUser != task.assignedUser) {
                 // Remove task from old user's pendingTasks
                 if (task.assignedUser) {
                     const oldUser = await User.findById(task.assignedUser);
                     if (oldUser) {
-                        oldUser.pendingTasks = oldUser.pendingTasks.filter(tid => tid !== task._id.toString());
+                        oldUser.pendingTasks = oldUser.pendingTasks.filter(tid => tid != task._id.toString());
                         await oldUser.save();
                     }
                 }
@@ -241,9 +241,9 @@ module.exports = function(router) {
                 if (assignedUser) {
                     const newUser = await User.findById(assignedUser);
                     if (newUser) {
-                        task.assignedUser = newUser._id.toString();
+                        task.assignedUser = newUser._id;
                         task.assignedUserName = newUser.name;
-                        newUser.pendingTasks.push(task._id.toString());
+                        newUser.pendingTasks.push(task._id);
                         await newUser.save();
                     } else {
                         task.assignedUser = '';
@@ -277,7 +277,7 @@ module.exports = function(router) {
             if (task.assignedUser) {
                 const user = await User.findById(task.assignedUser);
                 if (user) {
-                    user.pendingTasks = user.pendingTasks.filter(tid => tid !== task._id.toString());
+                    user.pendingTasks = user.pendingTasks.filter(tid => tid != task._id.toString());
                     await user.save();
                 }
             }
@@ -291,4 +291,3 @@ module.exports = function(router) {
 
     return router;
 };
-
