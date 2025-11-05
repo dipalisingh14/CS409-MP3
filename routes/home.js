@@ -20,21 +20,25 @@ module.exports = function(router) {
     function parseQueryParams(req) {
         const query = {};
         const options = {};
-        if (req.query.where) query.where = JSON.parse(req.query.where);
-        if (req.query.sort) options.sort = JSON.parse(req.query.sort);
-        if (req.query.select) options.select = JSON.parse(req.query.select);
+        try {
+            if (req.query.where) query.where = JSON.parse(req.query.where);
+            if (req.query.sort) options.sort = JSON.parse(req.query.sort);
+            if (req.query.select) options.select = JSON.parse(req.query.select);
+        } catch (err) {
+            throw new Error('Invalid JSON in query parameter');
+        }
         if (req.query.skip) options.skip = parseInt(req.query.skip);
         if (req.query.limit) options.limit = parseInt(req.query.limit);
         return { query, options };
     }
 
-    /** ---------- USERS ---------- **/
+    //USERS
 
     // GET /users
     router.get('/users', async (req, res) => {
         try {
             const { query, options } = parseQueryParams(req);
-            const limit = options.limit ?? 0; // unlimited for users
+            const limit = options.limit ?? 0; 
             if (req.query.count === 'true') {
                 const count = await User.countDocuments(query.where ?? {});
                 return res.json({ message: 'OK', data: count });
@@ -46,7 +50,7 @@ module.exports = function(router) {
             });
             res.json({ message: 'OK', data: users });
         } catch (err) {
-            res.status(500).json({ message: 'Server error', data: err.message });
+            res.status(400).json({ message: err.message, data: null });
         }
     });
 
@@ -70,7 +74,12 @@ module.exports = function(router) {
             const exists = await User.findOne({ email });
             if (exists) return res.status(400).json({ message: 'User with this email already exists', data: null });
 
-            const newUser = new User({ name, email, pendingTasks: pendingTasks ?? [] });
+            const newUser = new User({
+                name,
+                email,
+                pendingTasks: pendingTasks ?? [],
+                dateCreated: new Date() 
+            });
             const saved = await newUser.save();
             res.status(201).json({ message: 'User created', data: saved });
         } catch (err) {
@@ -87,10 +96,32 @@ module.exports = function(router) {
             const user = await User.findById(req.params.id);
             if (!user) return res.status(404).json({ message: 'User not found', data: null });
 
-            // update pendingTasks if provided
+            // Update user's tasks: remove assignments that are no longer in pendingTasks
+            if (pendingTasks) {
+                const tasksToRemove = user.pendingTasks.filter(tid => !pendingTasks.includes(tid));
+                const tasksToAdd = pendingTasks.filter(tid => !user.pendingTasks.includes(tid));
+
+                // Remove old tasks assigned to this user
+                if (tasksToRemove.length > 0) {
+                    await Task.updateMany(
+                        { _id: { $in: tasksToRemove } },
+                        { $set: { assignedUser: '', assignedUserName: 'unassigned' } }
+                    );
+                }
+
+                // Add new tasks assigned to this user
+                if (tasksToAdd.length > 0) {
+                    await Task.updateMany(
+                        { _id: { $in: tasksToAdd } },
+                        { $set: { assignedUser: user._id.toString(), assignedUserName: user.name } }
+                    );
+                }
+
+                user.pendingTasks = pendingTasks;
+            }
+
             user.name = name;
             user.email = email;
-            user.pendingTasks = pendingTasks ?? [];
 
             const saved = await user.save();
             res.json({ message: 'User updated', data: saved });
@@ -118,13 +149,13 @@ module.exports = function(router) {
         }
     });
 
-    /** ---------- TASKS ---------- **/
+    //TASKS 
 
     // GET /tasks
     router.get('/tasks', async (req, res) => {
         try {
             const { query, options } = parseQueryParams(req);
-            const limit = options.limit ?? 100; // default 100
+            const limit = options.limit ?? 100;
             if (req.query.count === 'true') {
                 const count = await Task.countDocuments(query.where ?? {});
                 return res.json({ message: 'OK', data: count });
@@ -136,7 +167,7 @@ module.exports = function(router) {
             });
             res.json({ message: 'OK', data: tasks });
         } catch (err) {
-            res.status(500).json({ message: 'Server error', data: err.message });
+            res.status(400).json({ message: err.message, data: null });
         }
     });
 
@@ -158,16 +189,27 @@ module.exports = function(router) {
             if (!name || !deadline) return res.status(400).json({ message: 'Name and deadline are required', data: null });
 
             let assignedUserName = 'unassigned';
+            let userId = '';
             if (assignedUser) {
                 const user = await User.findById(assignedUser);
                 if (user) {
                     assignedUserName = user.name;
-                    user.pendingTasks.push(name); // add task to user
+                    userId = user._id.toString();
+                    user.pendingTasks.push(userId); // add task id to user pendingTasks
                     await user.save();
                 }
             }
 
-            const newTask = new Task({ name, description, deadline, completed, assignedUser, assignedUserName });
+            const newTask = new Task({
+                name,
+                description: description ?? '',
+                deadline,
+                completed: completed ?? false,
+                assignedUser: userId,
+                assignedUserName,
+                dateCreated: new Date()
+            });
+
             const saved = await newTask.save();
             res.status(201).json({ message: 'Task created', data: saved });
         } catch (err) {
@@ -185,8 +227,8 @@ module.exports = function(router) {
             if (!task) return res.status(404).json({ message: 'Task not found', data: null });
 
             // Update assigned user references
-            if (assignedUser && assignedUser !== task.assignedUser) {
-                // Remove from old user pendingTasks
+            if (assignedUser !== undefined && assignedUser !== task.assignedUser) {
+                // Remove task from old user's pendingTasks
                 if (task.assignedUser) {
                     const oldUser = await User.findById(task.assignedUser);
                     if (oldUser) {
@@ -194,16 +236,23 @@ module.exports = function(router) {
                         await oldUser.save();
                     }
                 }
-                // Add to new user pendingTasks
-                const newUser = await User.findById(assignedUser);
-                if (newUser) {
-                    newUser.pendingTasks.push(task._id.toString());
-                    await newUser.save();
-                    task.assignedUserName = newUser.name;
+
+                // Assign to new user if exists
+                if (assignedUser) {
+                    const newUser = await User.findById(assignedUser);
+                    if (newUser) {
+                        task.assignedUser = newUser._id.toString();
+                        task.assignedUserName = newUser.name;
+                        newUser.pendingTasks.push(task._id.toString());
+                        await newUser.save();
+                    } else {
+                        task.assignedUser = '';
+                        task.assignedUserName = 'unassigned';
+                    }
                 } else {
+                    task.assignedUser = '';
                     task.assignedUserName = 'unassigned';
                 }
-                task.assignedUser = assignedUser;
             }
 
             task.name = name;
@@ -242,3 +291,4 @@ module.exports = function(router) {
 
     return router;
 };
+
