@@ -32,13 +32,13 @@ module.exports = function(router) {
         return { query, options };
     }
 
-    //USERS
+    // USERS
 
     // GET /users
     router.get('/users', async (req, res) => {
         try {
             const { query, options } = parseQueryParams(req);
-            const limit = options.limit ?? 0; 
+            const limit = options.limit ?? 0;
             if (req.query.count === 'true') {
                 const count = await User.countDocuments(query.where ?? {});
                 return res.json({ message: 'OK', data: count });
@@ -70,7 +70,7 @@ module.exports = function(router) {
         try {
             const { name, email, pendingTasks } = req.body;
             if (!name || !email) return res.status(400).json({ message: 'Name and email are required', data: null });
-            
+
             const exists = await User.findOne({ email });
             if (exists) return res.status(400).json({ message: 'User with this email already exists', data: null });
 
@@ -78,7 +78,7 @@ module.exports = function(router) {
                 name,
                 email,
                 pendingTasks: pendingTasks ?? [],
-                dateCreated: new Date() 
+                dateCreated: new Date()
             });
             const saved = await newUser.save();
             res.status(201).json({ message: 'User created', data: saved });
@@ -96,12 +96,11 @@ module.exports = function(router) {
             const user = await User.findById(req.params.id);
             if (!user) return res.status(404).json({ message: 'User not found', data: null });
 
-            // Update user's tasks: remove assignments that are no longer in pendingTasks
             if (pendingTasks) {
                 const tasksToRemove = user.pendingTasks.filter(tid => !pendingTasks.includes(tid));
                 const tasksToAdd = pendingTasks.filter(tid => !user.pendingTasks.includes(tid));
 
-                // Remove old tasks assigned to this user
+                // Remove old tasks
                 if (tasksToRemove.length > 0) {
                     await Task.updateMany(
                         { _id: { $in: tasksToRemove } },
@@ -109,7 +108,7 @@ module.exports = function(router) {
                     );
                 }
 
-                // Add new tasks assigned to this user
+                // Add new tasks
                 if (tasksToAdd.length > 0) {
                     await Task.updateMany(
                         { _id: { $in: tasksToAdd } },
@@ -149,7 +148,7 @@ module.exports = function(router) {
         }
     });
 
-    //TASKS 
+    // TASKS
 
     // GET /tasks
     router.get('/tasks', async (req, res) => {
@@ -190,27 +189,38 @@ module.exports = function(router) {
 
             let assignedUserName = 'unassigned';
             let userId = '';
-            if (assignedUser) {
-                const user = await User.findById(assignedUser);
-                if (user) {
-                    assignedUserName = user.name;
-                    userId = user._id;
-                    user.pendingTasks.push(userId); // add task id to user pendingTasks
-                    await user.save();
-                }
-            }
 
             const newTask = new Task({
                 name,
                 description: description ?? '',
                 deadline,
                 completed: completed ?? false,
-                assignedUser: userId,
+                assignedUser: '',
                 assignedUserName,
                 dateCreated: new Date()
             });
 
             const saved = await newTask.save();
+
+            if (assignedUser) {
+                const user = await User.findById(assignedUser);
+                if (user) {
+                    assignedUserName = user.name;
+                    userId = user._id;
+
+                    // Update task with assigned user
+                    saved.assignedUser = userId;
+                    saved.assignedUserName = assignedUserName;
+                    await saved.save();
+
+                    // Add task ID to user's pendingTasks
+                    if (!user.pendingTasks.includes(saved._id.toString())) {
+                        user.pendingTasks.push(saved._id);
+                        await user.save();
+                    }
+                }
+            }
+
             res.status(201).json({ message: 'Task created', data: saved });
         } catch (err) {
             res.status(500).json({ message: 'Server error', data: err.message });
@@ -227,7 +237,7 @@ module.exports = function(router) {
             if (!task) return res.status(404).json({ message: 'Task not found', data: null });
 
             // Update assigned user references
-            if (assignedUser !== undefined && assignedUser != task.assignedUser) {
+            if (assignedUser !== undefined && assignedUser != task.assignedUser?.toString()) {
                 // Remove task from old user's pendingTasks
                 if (task.assignedUser) {
                     const oldUser = await User.findById(task.assignedUser);
@@ -237,14 +247,16 @@ module.exports = function(router) {
                     }
                 }
 
-                // Assign to new user if exists
+                // Assign to new user
                 if (assignedUser) {
                     const newUser = await User.findById(assignedUser);
                     if (newUser) {
                         task.assignedUser = newUser._id;
                         task.assignedUserName = newUser.name;
-                        newUser.pendingTasks.push(task._id);
-                        await newUser.save();
+                        if (!newUser.pendingTasks.includes(task._id.toString())) {
+                            newUser.pendingTasks.push(task._id);
+                            await newUser.save();
+                        }
                     } else {
                         task.assignedUser = '';
                         task.assignedUserName = 'unassigned';
